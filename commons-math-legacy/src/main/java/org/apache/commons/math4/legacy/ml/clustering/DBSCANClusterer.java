@@ -145,6 +145,7 @@ public class DBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
                 final Cluster<T> cluster = new Cluster<>();
                 clusters.add(expandCluster(cluster, point, neighbors, points, visited));
             } else {
+                // 标记为噪声，不加入任何簇
                 visited.put(point, PointStatus.NOISE);
             }
         }
@@ -167,24 +168,32 @@ public class DBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
                                      final List<T> neighbors,
                                      final Collection<T> points,
                                      final Map<Clusterable, PointStatus> visited) {
+        // 将核心点加入簇
         cluster.addPoint(point);
         visited.put(point, PointStatus.PART_OF_CLUSTER);
 
+        // 待扩展队列，初始为核心点的邻居
         List<T> seeds = new ArrayList<>(neighbors);
         int index = 0;
+        // 迭代扩展
         while (index < seeds.size()) {
             final T current = seeds.get(index);
             PointStatus pStatus = visited.get(current);
             // only check non-visited points
+            // 未访问
             if (pStatus == null) {
+                // 再次计算当前点的邻居
                 final List<T> currentNeighbors = getNeighbors(current, points);
                 if (currentNeighbors.size() >= minPts) {
+                    // 将新邻居追加进队列
                     seeds = merge(seeds, currentNeighbors);
                 }
             }
 
+            // 未归簇
             if (pStatus != PointStatus.PART_OF_CLUSTER) {
                 visited.put(current, PointStatus.PART_OF_CLUSTER);
+                // 边界点/未访问点加入当前簇
                 cluster.addPoint(current);
             }
 
