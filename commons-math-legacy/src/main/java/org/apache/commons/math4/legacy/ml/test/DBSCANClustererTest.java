@@ -18,7 +18,7 @@ public class DBSCANClustererTest {
         System.out.println("=== 测试 DBSCAN 聚类算法的运行时间 ===");
 
         // List<DoublePoint> points = generateSmallDataPoints();
-        List<DoublePoint> points = generateLargeDataPoints();
+        List<DoublePoint> points = generateDataPoints(1000);
 
         // 创建 DBSCAN 聚类器
         // eps=1.0: 邻域半径为 1.0
@@ -39,6 +39,7 @@ public class DBSCANClustererTest {
         long incEnd = System.currentTimeMillis();
         System.out.println("运行时间: " + (incEnd - incStart) + " ms");
         // printClusterResult(clusters, points);
+        // printStatistics(clusters);
 
         // 原始 DBSCAN
         System.out.println("=== 原始 DBSCAN 聚类算法测试 ===");
@@ -48,10 +49,36 @@ public class DBSCANClustererTest {
         long originEnd = System.currentTimeMillis();
         System.out.println("运行时间: " + (originEnd - originStart) + " ms");
         // printClusterResult(originClusters, points);
+        // printStatistics(clusters);
+    }
+
+    private static void incrementalDBSCANTest() {
+        System.out.println("=== 测试增量 DBSCAN 聚类算法 ===");
+        List<DoublePoint> points = generateDataPoints(1000);
+        IncrementalDBSCANClusterer<DoublePoint> clusterer = new IncrementalDBSCANClusterer<>(0.5, 5);
+        long start = System.currentTimeMillis();
+        List<Cluster<DoublePoint>> clusters = clusterer.cluster(points);
+        long end = System.currentTimeMillis();
+        System.out.println("初始化运行时间: " + (end - start) + " ms");
+        printClusterResult(clusters);
+
+        for (int i = 0; i < 20; i++) {
+            System.out.printf("------ 第 %d 次 ------%n", i+1);
+            clusterer.addPoints(generateDataPoints(500));
+            long incStart = System.currentTimeMillis();
+            clusters = clusterer.getClusters();
+            long incEnd = System.currentTimeMillis();
+            System.out.println("增量运行时间: " + (incEnd - incStart) + " ms");
+            long printStart = System.currentTimeMillis();
+            printClusterResult(clusters);
+            long printEnd = System.currentTimeMillis();
+            System.out.println("打印运行时间: " + (printEnd - printStart) + " ms");
+        }
     }
 
     public static void main(String[] args) {
-        executionTimeTest();
+        // executionTimeTest();
+        incrementalDBSCANTest();
     }
 
     private static List<DoublePoint> generateSmallDataPoints() {
@@ -85,48 +112,52 @@ public class DBSCANClustererTest {
         return points;
     }
 
-    private static List<DoublePoint> generateLargeDataPoints() {
+    private static List<DoublePoint> generateDataPoints(int cnt) {
         // 1. 创建测试数据点
         List<DoublePoint> points = new ArrayList<>();
 
-        // 使用随机数生成器，固定种子保证可重复性
-        Random random = new Random(42);
+        // 使用随机数生成器
+        Random random = new Random();
+        int cnt1 = cnt * 30 / 100;
+        int cnt2 = cnt * 30 / 100;
+        int cnt3 = cnt * 29 / 100;
+        int cnt4 = cnt - cnt1 - cnt2 - cnt3;
 
-        // 第一个簇：中心在 (2, 2) 附近，约4000个点
-        for (int i = 0; i < 4000; i++) {
+        // 第一个簇：中心在 (2, 2) 附近
+        for (int i = 0; i < cnt1; i++) {
             double x = 2.0 + random.nextGaussian() * 0.3;
             double y = 2.0 + random.nextGaussian() * 0.3;
             points.add(new DoublePoint(new double[]{x, y}));
         }
 
-        // 第二个簇：中心在 (8, 8) 附近，约4000个点
-        for (int i = 0; i < 4000; i++) {
+        // 第二个簇：中心在 (8, 8) 附近
+        for (int i = 0; i < cnt2; i++) {
             double x = 8.0 + random.nextGaussian() * 0.3;
             double y = 8.0 + random.nextGaussian() * 0.3;
             points.add(new DoublePoint(new double[]{x, y}));
         }
 
-        // 第三个簇：中心在 (15, 3) 附近，约3500个点
-        for (int i = 0; i < 3500; i++) {
+        // 第三个簇：中心在 (15, 3) 附近
+        for (int i = 0; i < cnt3; i++) {
             double x = 15.0 + random.nextGaussian() * 0.4;
             double y = 3.0 + random.nextGaussian() * 0.4;
             points.add(new DoublePoint(new double[]{x, y}));
         }
 
-        // 噪声点：随机分布在空间中，约500个点
-        for (int i = 0; i < 500; i++) {
+        // 噪声点：随机分布在空间中
+        for (int i = 0; i < cnt4; i++) {
             double x = random.nextDouble() * 20.0;
             double y = random.nextDouble() * 20.0;
             points.add(new DoublePoint(new double[]{x, y}));
         }
 
-        System.out.println("测试数据点总数: " + points.size());
+        // System.out.println("测试数据点总数: " + points.size());
         // printPoints(points);
-        System.out.println();
+        // System.out.println();
         return points;
     }
 
-    private static void printClusterResult(List<Cluster<DoublePoint>> clusters, List<DoublePoint> points) {
+    private static void printClusterResult(List<Cluster<DoublePoint>> clusters) {
         System.out.println("=== 聚类结果 ===");
         System.out.println("发现的簇数量: " + clusters.size());
         System.out.println();
@@ -135,24 +166,25 @@ public class DBSCANClustererTest {
             Cluster<DoublePoint> cluster = clusters.get(i);
             System.out.println("簇 #" + (i + 1) + ":");
             System.out.println("  包含点数: " + cluster.getPoints().size());
-            System.out.println("  数据点:");
-            for (DoublePoint point : cluster.getPoints()) {
-                double[] coords = point.getPoint();
-                System.out.printf("    (%.1f, %.1f)%n", coords[0], coords[1]);
-            }
-            System.out.println();
+            // System.out.println("  数据点:");
+            // for (DoublePoint point : cluster.getPoints()) {
+            //     double[] coords = point.getPoint();
+            //     System.out.printf("    (%.1f, %.1f)%n", coords[0], coords[1]);
+            // }
+            // System.out.println();
         }
 
         // 5. 计算未被聚类的噪声点
+        printStatistics(clusters);
+    }
+
+    private static void printStatistics(List<Cluster<DoublePoint>> clusters) {
         int clusteredPoints = clusters.stream()
                 .mapToInt(c -> c.getPoints().size())
                 .sum();
-        int noisePoints = points.size() - clusteredPoints;
-
         System.out.println("=== 统计信息 ===");
-        System.out.println("总点数: " + points.size());
+        System.out.println("簇数量: " + clusters.size());
         System.out.println("已聚类点数: " + clusteredPoints);
-        System.out.println("噪声点数: " + noisePoints);
     }
 
     /**

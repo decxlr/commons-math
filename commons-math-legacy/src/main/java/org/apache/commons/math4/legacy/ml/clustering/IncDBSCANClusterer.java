@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,17 +58,27 @@ import java.util.stream.Collectors;
  */
 public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
 
-    /** Maximum radius of the neighborhood to be considered. */
-    private final double              eps;
+    /**
+     * Maximum radius of the neighborhood to be considered.
+     */
+    private final double eps;
 
-    /** Minimum number of points needed for a cluster. */
-    private final int                 minPts;
+    /**
+     * Minimum number of points needed for a cluster.
+     */
+    private final int minPts;
 
-    /** Status of a point during the clustering process. */
+    /**
+     * Status of a point during the clustering process.
+     */
     private enum PointStatus {
-        /** The point has is considered to be noise. */
+        /**
+         * The point has is considered to be noise.
+         */
         NOISE,
-        /** The point is already part of a cluster. */
+        /**
+         * The point is already part of a cluster.
+         */
         PART_OF_CLUSTER
     }
 
@@ -76,7 +87,7 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
      * <p>
      * The euclidean distance will be used as default distance measure.
      *
-     * @param eps maximum radius of the neighborhood to be considered
+     * @param eps    maximum radius of the neighborhood to be considered
      * @param minPts minimum number of points needed for a cluster
      * @throws NotPositiveException if {@code eps < 0.0} or {@code minPts < 0}
      */
@@ -87,8 +98,8 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
     /**
      * Creates a new instance of a DBSCANClusterer.
      *
-     * @param eps maximum radius of the neighborhood to be considered
-     * @param minPts minimum number of points needed for a cluster
+     * @param eps     maximum radius of the neighborhood to be considered
+     * @param minPts  minimum number of points needed for a cluster
      * @param measure the distance measure to use
      * @throws NotPositiveException if {@code eps < 0.0} or {@code minPts < 0}
      */
@@ -107,6 +118,7 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
 
     /**
      * Returns the maximum radius of the neighborhood to be considered.
+     *
      * @return maximum radius of the neighborhood
      */
     public double getEps() {
@@ -115,10 +127,73 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
 
     /**
      * Returns the minimum number of points needed for a cluster.
+     *
      * @return minimum number of points needed for a cluster
      */
     public int getMinPts() {
         return minPts;
+    }
+
+    /**
+     * Cluster label assigned to noise points.
+     */
+    private static final int LABEL_NOISE = -1;
+
+    /**
+     * Internal sentinel label for a point that has been inserted but whose cluster
+     * assignment has not yet been determined.
+     */
+    private static final int LABEL_UNCLASSIFIED = -2;
+
+    /**
+     * Active points, mapped to their internal metadata. Insertion order is preserved
+     * for deterministic iteration.
+     */
+    private final Map<T, PointNode> nodes = new LinkedHashMap<>();
+
+    final class PointNode {
+        /**
+         * The wrapped clusterable point.
+         */
+        final T point;
+
+        /**
+         * All PointNodes (including {@code this}) whose distance to {@code point}
+         * is at most ε. Kept in sync when points are added or removed.
+         */
+        final Set<PointNode> neighbors = new HashSet<>();
+
+        /**
+         * Number of points within ε of {@code point}, counting itself.
+         * Invariant: {@code neighborCount == neighbors.size()} for datasets
+         * without exact duplicates.
+         */
+        int neighborCount;
+
+        /**
+         * Current cluster label: a non-negative integer for real clusters,
+         * {@link #LABEL_NOISE}, or {@link #LABEL_UNCLASSIFIED}.
+         */
+        int label;
+
+        PointNode(final T point) {
+            this.point = point;
+            this.label = LABEL_UNCLASSIFIED;
+            this.neighbors.add(this);   // self is always a neighbor
+            this.neighborCount = 1;     // count self
+        }
+
+        /**
+         * Returns {@code true} if this point has at least {@code minPts} neighbors.
+         */
+        boolean isCore() {
+            return neighborCount >= minPts;
+        }
+
+        @Override
+        public String toString() {
+            return "PointNode{label=" + label + ", neighborCount=" + neighborCount + "}";
+        }
     }
 
     /**
@@ -153,14 +228,30 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
         return clusters;
     }
 
+    public List<Cluster<T>> incrementalCluster(final Collection<T> points) {
+        NullArgumentException.check(points);
+
+        for (T point : points) {
+            // 直接覆盖
+            // T 需要自己实现hashCode、 equals
+            // if (nodes.containsKey(point)) {
+            //     continue;
+            // }
+            final IncDBSCANClusterer.PointNode newNode = new IncDBSCANClusterer.PointNode(point);
+            nodes.put(point, newNode);
+        }
+
+        return null;
+    }
+
     /**
      * Expands the cluster to include density-reachable items.
      *
-     * @param cluster Cluster to expand
-     * @param point Point to add to cluster
+     * @param cluster   Cluster to expand
+     * @param point     Point to add to cluster
      * @param neighbors List of neighbors
-     * @param points the data set
-     * @param visited the set of already visited points
+     * @param points    the data set
+     * @param visited   the set of already visited points
      * @return the expanded cluster
      */
     private Cluster<T> expandCluster(final Cluster<T> cluster,
@@ -205,13 +296,13 @@ public class IncDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
     /**
      * Returns a list of density-reachable neighbors of a {@code point}.
      *
-     * @param point the point to look for
+     * @param point  the point to look for
      * @param points possible neighbors
      * @return the List of neighbors
      */
     private List<T> getNeighbors(final T point, final Collection<T> points) {
         return points.stream().filter(neighbor -> point != neighbor && distance(neighbor, point) <= eps)
-                              .collect(Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     /**

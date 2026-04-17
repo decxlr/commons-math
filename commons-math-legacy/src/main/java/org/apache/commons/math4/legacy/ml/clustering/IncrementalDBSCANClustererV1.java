@@ -4,7 +4,7 @@
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * The License.  You may obtain a copy of the License at
+ * the License.  You may obtain a copy of the License at
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -16,6 +16,11 @@
  */
 package org.apache.commons.math4.legacy.ml.clustering;
 
+import org.apache.commons.math4.legacy.exception.NotPositiveException;
+import org.apache.commons.math4.legacy.exception.NullArgumentException;
+import org.apache.commons.math4.legacy.ml.distance.DistanceMeasure;
+import org.apache.commons.math4.legacy.ml.distance.EuclideanDistance;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -24,35 +29,27 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
-import org.apache.commons.math4.legacy.exception.NotPositiveException;
-import org.apache.commons.math4.legacy.exception.NullArgumentException;
-import org.apache.commons.math4.legacy.ml.distance.DistanceMeasure;
-import org.apache.commons.math4.legacy.ml.distance.EuclideanDistance;
 
 /**
  * Incremental DBSCAN (Density-Based Spatial Clustering of Applications with Noise) algorithm.
  *
  * <p>Unlike {@link DBSCANClusterer} which recomputes the entire clustering from scratch on
  * each call to {@link #cluster(Collection)}, this implementation maintains persistent state
- * and supports efficient incremental updates via {@link #addPoint(Clusterable)},
- * {@link #addPoints(Collection)}, and {@link #removePoint(Clusterable)}.
+ * and supports efficient incremental updates via {@link #addPoint(Clusterable)} and
+ * {@link #removePoint(Clusterable)}.
  *
- * <p>When the configured {@link DistanceMeasure} is {@link EuclideanDistance} (the default),
- * an internal KD-Tree is used for ε-neighborhood queries, reducing per-insertion cost from
- * O(n) to O(√n + k) on average (where k is the number of neighbors found).  For other
- * distance measures, a linear scan fallback is used.
+ * <p>Only the ε-neighborhood of the changed point requires re-evaluation, making each
+ * individual operation O(k) where k is the size of the local neighborhood, rather than
+ * O(n) for a full scan.
  *
  * <p><b>Insertion cases</b> (following Ester et al. 1998 incremental extension):
  * <ul>
  *   <li><b>Noise</b> – new point has no core neighbor → assigned as noise.</li>
  *   <li><b>Absorption</b> – new point has existing core neighbors but no new core is
- *       created → joins the cluster of the lowest-labeled core neighbor (consistent with
- *       standard DBSCAN semantics).</li>
+ *       created → joins the cluster of the highest-labeled core neighbor.</li>
  *   <li><b>Creation</b> – insertion triggers new core point(s) with no existing cluster
  *       nearby → a new cluster is created.</li>
  *   <li><b>Merge</b> – new core point(s) bridge multiple existing clusters → merged into
@@ -75,12 +72,10 @@ import org.apache.commons.math4.legacy.ml.distance.EuclideanDistance;
  * IncrementalDBSCANClusterer<DoublePoint> clusterer =
  *     new IncrementalDBSCANClusterer<>(2.0, 3);
  *
- * // Single incremental insertion
- * clusterer.addPoint(p);
- *
- * // Batch incremental insertion (more efficient than individual addPoint calls)
- * clusterer.addPoints(batchOfPoints);
- *
+ * // Incremental additions
+ * for (DoublePoint p : stream) {
+ *     clusterer.addPoint(p);
+ * }
  * List<Cluster<DoublePoint>> clusters = clusterer.getClusters();
  *
  * // Remove a point
@@ -93,16 +88,16 @@ import org.apache.commons.math4.legacy.ml.distance.EuclideanDistance;
  * @param <T> type of the points to cluster
  * @see DBSCANClusterer
  */
-public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer<T> {
+public class IncrementalDBSCANClustererV1<T extends Clusterable> extends Clusterer<T> {
 
     /** Cluster label assigned to noise points. */
-    public static final int LABEL_NOISE = -1;
+    private static final int LABEL_NOISE = -1;
 
     /**
      * Internal sentinel label for a point that has been inserted but whose cluster
      * assignment has not yet been determined.
      */
-    static final int LABEL_UNCLASSIFIED = -2;
+    private static final int LABEL_UNCLASSIFIED = -2;
 
     /** Maximum radius of the ε-neighborhood. */
     private final double eps;
@@ -121,20 +116,6 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
      * for deterministic iteration.
      */
     private final Map<T, PointNode> nodes = new LinkedHashMap<>();
-
-    /**
-     * Bidirectional label mapping: label → set of nodes with that label.
-     * Optimizes {@link #changeLabels(int, int)} from O(n) to O(k) and
-     * {@link #getClusters()} from O(n) to O(k).
-     */
-    private final Map<Integer, Set<PointNode>> labelToNodes = new LinkedHashMap<>();
-
-    /**
-     * Spatial index for accelerated ε-neighborhood queries.
-     * When the distance measure is not Euclidean-compatible, this field is {@code null}
-     * and linear scan is used instead.
-     */
-    private final KDTree spatialIndex;
 
     // =========================================================================
     // Inner class: PointNode
@@ -192,223 +173,6 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
     }
 
     // =========================================================================
-    // Inner class: KDTree (spatial index)
-    // =========================================================================
-
-    /**
-     * A simple KD-Tree for accelerating ε-neighborhood range queries.
-     *
-     * <p>Supports insertion and lazy deletion.  When the ratio of deleted nodes
-     * exceeds a threshold, the tree is automatically rebuilt to maintain
-     * query performance.
-     *
-     * <p>Range queries prune branches using a per-dimension bounding box.
-     * This pruning is exact for Chebyshev distance, conservative for Euclidean
-     * and Manhattan distances, and serves as a loose filter for other metrics.
-     * Candidates returned by the tree are always verified against the actual
-     * configured {@link DistanceMeasure}.
-     */
-    final class KDTree {
-
-        /** Root node of the tree. */
-        private KDNode root;
-
-        /** Number of active (non-deleted) nodes. */
-        private int activeCount;
-
-        /** Number of lazily deleted nodes. */
-        private int deletedCount;
-
-        /**
-         * Threshold ratio of deleted/active nodes that triggers a rebuild.
-         * When {@code deletedCount / activeCount > REBUILD_THRESHOLD}, the tree
-         * is rebuilt from scratch.
-         */
-        private static final double REBUILD_THRESHOLD = 0.5;
-
-        KDTree() {
-            root = null;
-            activeCount = 0;
-            deletedCount = 0;
-        }
-
-        /** Inserts a point node into the tree. */
-        void insert(final PointNode node) {
-            activeCount++;
-            if (root == null) {
-                root = new KDNode(node, 0);
-            } else {
-                insertRecursive(root, node, 0);
-            }
-        }
-
-        /**
-         * Marks a point node as deleted (lazy deletion).  Returns {@code true}
-         * if the node was found and marked; triggers a rebuild if the deletion
-         * ratio exceeds the threshold.
-         */
-        boolean delete(final PointNode node) {
-            final KDNode kdNode = findNode(root, node);
-            if (kdNode == null) {
-                return false;
-            }
-            kdNode.deleted = true;
-            deletedCount++;
-            activeCount--;
-            if (deletedCount > activeCount * REBUILD_THRESHOLD) {
-                rebuild();
-            }
-            return true;
-        }
-
-        /**
-         * Finds all active PointNodes whose Chebyshev (L∞) distance from
-         * {@code query} is at most {@code eps}.  These are candidate ε-neighbors;
-         * they must still be verified with the actual distance measure.
-         *
-         * @param query the query point coordinates
-         * @param eps   the search radius (applied per-dimension as a bounding box)
-         * @return list of candidate neighbor PointNodes
-         */
-        List<PointNode> rangeQuery(final double[] query, final double eps) {
-            final List<PointNode> result = new ArrayList<>();
-            if (root == null) {
-                return result;
-            }
-            rangeQueryRecursive(root, query, eps, result);
-            return result;
-        }
-
-        /** Rebuilds the entire tree from all active nodes, clearing lazy-deleted entries. */
-        void rebuild() {
-            final List<PointNode> activeNodes = new ArrayList<>();
-            collectActive(root, activeNodes);
-            deletedCount = 0;
-            root = buildBalanced(activeNodes, 0);
-        }
-
-        // ---- Private helpers ----
-
-        private void insertRecursive(final KDNode current, final PointNode node, final int depth) {
-            final int dim = depth % node.point.getPoint().length;
-            final double[] currentCoords = current.node.point.getPoint();
-            final double[] nodeCoords = node.point.getPoint();
-
-            if (nodeCoords[dim] < currentCoords[dim]) {
-                if (current.left == null) {
-                    current.left = new KDNode(node, depth + 1);
-                } else {
-                    insertRecursive(current.left, node, depth + 1);
-                }
-            } else {
-                if (current.right == null) {
-                    current.right = new KDNode(node, depth + 1);
-                } else {
-                    insertRecursive(current.right, node, depth + 1);
-                }
-            }
-        }
-
-        private KDNode findNode(final KDNode current, final PointNode target) {
-            if (current == null) {
-                return null;
-            }
-            if (current.node == target) {
-                return current;
-            }
-            final int dim = current.depth % target.point.getPoint().length;
-            final double[] targetCoords = target.point.getPoint();
-            final double[] currentCoords = current.node.point.getPoint();
-
-            if (targetCoords[dim] < currentCoords[dim]) {
-                return findNode(current.left, target);
-            } else {
-                // Search both subtrees since equal on split dim doesn't guarantee
-                // the node is in the right subtree (it could be in the left).
-                final KDNode found = findNode(current.right, target);
-                return found != null ? found : findNode(current.left, target);
-            }
-        }
-
-        private void rangeQueryRecursive(final KDNode current, final double[] query,
-                                          final double eps, final List<PointNode> result) {
-            if (current == null) {
-                return;
-            }
-            if (!current.deleted) {
-                result.add(current.node);
-            }
-            final int dim = current.depth % query.length;
-            final double diff = query[dim] - current.node.point.getPoint()[dim];
-
-            // Always search the side that could contain candidates within the bounding box.
-            if (diff - eps <= 0 && current.left != null) {
-                rangeQueryRecursive(current.left, query, eps, result);
-            }
-            if (diff + eps >= 0 && current.right != null) {
-                rangeQueryRecursive(current.right, query, eps, result);
-            }
-        }
-
-        private void collectActive(final KDNode current, final List<PointNode> list) {
-            if (current == null) {
-                return;
-            }
-            if (!current.deleted) {
-                list.add(current.node);
-            }
-            collectActive(current.left, list);
-            collectActive(current.right, list);
-        }
-
-        /**
-         * Builds a balanced KD-Tree from a sorted list of nodes.
-         * Sorts by the median-split dimension at each level.
-         */
-        private KDNode buildBalanced(final List<PointNode> nodes, final int depth) {
-            if (nodes.isEmpty()) {
-                return null;
-            }
-            final int dim = depth % nodes.get(0).point.getPoint().length;
-            nodes.sort((a, b) -> Double.compare(a.point.getPoint()[dim],
-                                                 b.point.getPoint()[dim]));
-            final int mid = nodes.size() / 2;
-            final KDNode node = new KDNode(nodes.get(mid), depth);
-
-            final List<PointNode> leftList = nodes.subList(0, mid);
-            final List<PointNode> rightList = nodes.subList(mid + 1, nodes.size());
-
-            node.left = buildBalanced(new ArrayList<>(leftList), depth + 1);
-            node.right = buildBalanced(new ArrayList<>(rightList), depth + 1);
-            return node;
-        }
-    }
-
-    /** A node in the KD-Tree. */
-    final class KDNode {
-        /** The PointNode stored at this position. */
-        final PointNode node;
-
-        /** Depth of this node in the tree (determines the split dimension). */
-        final int depth;
-
-        /** Left subtree (points with smaller coordinate on split dimension). */
-        KDNode left;
-
-        /** Right subtree (points with larger or equal coordinate on split dimension). */
-        KDNode right;
-
-        /** Whether this node has been lazily deleted. */
-        boolean deleted;
-
-        KDNode(final PointNode node, final int depth) {
-            this.node = node;
-            this.depth = depth;
-            this.deleted = false;
-        }
-    }
-
-    // =========================================================================
     // Constructors
     // =========================================================================
 
@@ -420,16 +184,12 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
      *               (must be ≥ 0)
      * @throws NotPositiveException if {@code eps < 0.0} or {@code minPts < 0}
      */
-    public IncrementalDBSCANClusterer(final double eps, final int minPts) {
+    public IncrementalDBSCANClustererV1(final double eps, final int minPts) {
         this(eps, minPts, new EuclideanDistance());
     }
 
     /**
      * Creates a new IncrementalDBSCANClusterer with a custom distance measure.
-     *
-     * <p>When {@code measure} is {@link EuclideanDistance}, an internal KD-Tree
-     * spatial index is used for accelerated ε-neighborhood queries.  For other
-     * distance measures, a linear scan is used as fallback.
      *
      * @param eps     maximum radius of the ε-neighborhood (must be ≥ 0)
      * @param minPts  minimum number of points (including self) to form a core point
@@ -437,8 +197,8 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
      * @param measure the distance measure to use
      * @throws NotPositiveException if {@code eps < 0.0} or {@code minPts < 0}
      */
-    public IncrementalDBSCANClusterer(final double eps, final int minPts,
-                                      final DistanceMeasure measure) {
+    public IncrementalDBSCANClustererV1(final double eps, final int minPts,
+                                        final DistanceMeasure measure) {
         super(measure);
         if (eps < 0.0d) {
             throw new NotPositiveException(eps);
@@ -448,7 +208,6 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
         }
         this.eps = eps;
         this.minPts = minPts;
-        this.spatialIndex = (measure instanceof EuclideanDistance) ? new KDTree() : null;
     }
 
     // =========================================================================
@@ -487,7 +246,9 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
     public List<Cluster<T>> cluster(final Collection<T> points) {
         NullArgumentException.check(points);
         reset();
-        addPoints(points);
+        for (final T point : points) {
+            addPoint(point);
+        }
         return getClusters();
     }
 
@@ -497,13 +258,7 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
      */
     public void reset() {
         nodes.clear();
-        labelToNodes.clear();
         nextLabel = 0;
-        if (spatialIndex != null) {
-            spatialIndex.root = null;
-            spatialIndex.activeCount = 0;
-            spatialIndex.deletedCount = 0;
-        }
     }
 
     /**
@@ -521,73 +276,8 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
         }
         final PointNode newNode = new PointNode(point);
         nodes.put(point, newNode);
-        if (spatialIndex != null) {
-            spatialIndex.insert(newNode);
-        }
         linkNeighbors(newNode);
         processInsertion(newNode);
-    }
-
-    /**
-     * Batch-incrementally inserts multiple points and updates the clustering.
-     *
-     * <p>For each point in the collection:
-     * <ul>
-     *   <li>If a point that is {@code equal} to an existing point, it is skipped.</li>
-     *   <li>Neighbor links are established, and the clustering is updated.</li>
-     * </ul>
-     *
-     * <p>This method is more efficient than calling {@link #addPoint(Clusterable)}
-     * repeatedly because the KD-Tree (when available) is built in a balanced fashion
-     * when the collection is large and the tree is empty or nearly empty.
-     *
-     * @param points the points to insert (cannot be {@code null})
-     */
-    public void addPoints(final Collection<T> points) {
-        NullArgumentException.check(points);
-
-        // When the clusterer is empty and we have a large batch, build the KD-Tree
-        // balanced first, then link neighbors and process insertions.
-        if (nodes.isEmpty() && spatialIndex != null && points.size() > 100) {
-            // Phase 1: Create all PointNodes and insert into nodes map
-            final List<PointNode> newNodes = new ArrayList<>();
-            for (final T point : points) {
-                if (nodes.containsKey(point)) {
-                    continue;
-                }
-                final PointNode newNode = new PointNode(point);
-                nodes.put(point, newNode);
-                newNodes.add(newNode);
-            }
-
-            // Phase 2: Build balanced KD-Tree from all new nodes
-            if (!newNodes.isEmpty()) {
-                spatialIndex.root = null;
-                spatialIndex.activeCount = 0;
-                spatialIndex.deletedCount = 0;
-                for (final PointNode node : newNodes) {
-                    spatialIndex.insert(node);
-                }
-                // Rebuild to get a balanced tree
-                spatialIndex.rebuild();
-
-                // Phase 3: Link neighbors and process insertions
-                // For batch insertion, first link all neighbors, then process insertions
-                // in order. This ensures consistent cluster assignments.
-                for (final PointNode newNode : newNodes) {
-                    linkNeighbors(newNode);
-                }
-                for (final PointNode newNode : newNodes) {
-                    processInsertion(newNode);
-                }
-            }
-            return;
-        }
-
-        // Default: insert points one by one
-        for (final T point : points) {
-            addPoint(point);
-        }
     }
 
     /**
@@ -611,33 +301,23 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
                 neighbor.neighborCount--;
             }
         }
-        removeFromLabelMap(toDelete);
         nodes.remove(point);
-        if (spatialIndex != null) {
-            spatialIndex.delete(toDelete);
-        }
     }
 
     /**
      * Returns a snapshot of the current clustering.  Noise points are excluded.
      *
-     * <p>Uses the {@link #labelToNodes} bidirectional mapping for O(k) performance
-     * where k is the number of non-noise points.
-     *
      * @return list of clusters (may be empty)
      */
     public List<Cluster<T>> getClusters() {
-        final List<Cluster<T>> result = new ArrayList<>();
-        for (final Map.Entry<Integer, Set<PointNode>> entry : labelToNodes.entrySet()) {
-            if (entry.getKey() >= 0) {
-                final Cluster<T> cluster = new Cluster<>();
-                for (final PointNode node : entry.getValue()) {
-                    cluster.addPoint(node.point);
-                }
-                result.add(cluster);
+        final Map<Integer, Cluster<T>> clusterMap = new LinkedHashMap<>();
+        for (final PointNode node : nodes.values()) {
+            if (node.label >= 0) {
+                clusterMap.computeIfAbsent(node.label, id -> new Cluster<>())
+                          .addPoint(node.point);
             }
         }
-        return result;
+        return new ArrayList<>(clusterMap.values());
     }
 
     /**
@@ -666,42 +346,19 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
     // =========================================================================
 
     /**
-     * Finds ε-neighbors of {@code newNode} and creates bidirectional links,
-     * updating {@link PointNode#neighborCount} on both sides.
-     *
-     * <p>When the KD-Tree spatial index is available, uses it for O(√n + k) range
-     * queries.  Otherwise, falls back to O(n) linear scan.
+     * Scans all existing nodes for ε-neighbors of {@code newNode} and creates
+     * bidirectional links, updating {@link PointNode#neighborCount} on both sides.
      */
     private void linkNeighbors(final PointNode newNode) {
-        if (spatialIndex != null) {
-            // Use KD-Tree for accelerated neighbor search
-            final List<PointNode> candidates = spatialIndex.rangeQuery(
-                    newNode.point.getPoint(), eps);
-            for (final PointNode candidate : candidates) {
-                if (candidate == newNode) {
-                    continue;
-                }
-                // KD-Tree returns candidates within the Chebyshev bounding box;
-                // verify with the actual distance measure.
-                if (distance(candidate.point, newNode.point) <= eps) {
-                    newNode.neighbors.add(candidate);
-                    newNode.neighborCount++;
-                    candidate.neighbors.add(newNode);
-                    candidate.neighborCount++;
-                }
+        for (final PointNode existing : nodes.values()) {
+            if (existing == newNode) {
+                continue;
             }
-        } else {
-            // Linear scan fallback for non-Euclidean distance measures
-            for (final PointNode existing : nodes.values()) {
-                if (existing == newNode) {
-                    continue;
-                }
-                if (distance(existing.point, newNode.point) <= eps) {
-                    newNode.neighbors.add(existing);
-                    newNode.neighborCount++;
-                    existing.neighbors.add(newNode);
-                    existing.neighborCount++;
-                }
+            if (distance(existing.point, newNode.point) <= eps) {
+                newNode.neighbors.add(existing);
+                newNode.neighborCount++;
+                existing.neighbors.add(newNode);
+                existing.neighborCount++;
             }
         }
     }
@@ -753,20 +410,17 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
         if (newCores.isEmpty()) {
             // ---- Noise or Absorption ----
             if (!oldCores.isEmpty()) {
-                // Absorption: border point joins the oldest (lowest-labeled) cluster,
-                // consistent with standard DBSCAN semantics.
-                int minLabel = Integer.MAX_VALUE;
+                // Absorption: border point joins the most recently created cluster.
+                int maxLabel = LABEL_NOISE;
                 for (final PointNode oc : oldCores) {
-                    if (oc.label >= 0 && oc.label < minLabel) {
-                        minLabel = oc.label;
+                    if (oc.label > maxLabel) {
+                        maxLabel = oc.label;
                     }
                 }
-                inserted.label = minLabel;
-                addToLabelMap(inserted);
+                inserted.label = maxLabel;
             } else {
                 // Noise: no core neighbors at all.
                 inserted.label = LABEL_NOISE;
-                addToLabelMap(inserted);
             }
             return;
         }
@@ -827,46 +481,45 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
      * <h3>Algorithm outline</h3>
      * <ol>
      *   <li>Decrement {@link PointNode#neighborCount} for all neighbors of
-     *       {@code toDelete} <em>excluding {@code toDelete} itself</em>.</li>
+     *       {@code toDelete} (simulating removal).</li>
      *   <li>Identify <em>ex-cores</em>: nodes that have just lost core status.</li>
      *   <li>Collect <em>update seeds</em> (core neighbors of ex-cores, excluding
      *       {@code toDelete}) and non-core neighbors of ex-cores.</li>
      *   <li>For each cluster-group of update seeds, run BFS split detection and
      *       assign fresh labels to any disconnected sub-components.</li>
-     *   <li>Re-evaluate <em>all</em> non-core (border) points whose core neighbors
-     *       were affected by the deletion, not just those directly adjacent to
-     *       ex-cores.</li>
+     *   <li>Re-evaluate non-core (border) neighbors: each one either inherits the
+     *       label of a remaining core neighbor or becomes noise.</li>
      * </ol>
      *
      * <p>Physical removal of the node from the data structure happens in
      * {@link #removePoint(Clusterable)} after this method returns.
      */
     private void processDeletion(final PointNode toDelete) {
-        // Step 1: decrement neighbor counts to simulate removal, excluding toDelete itself.
-        final boolean toDeleteWasCore = toDelete.isCore();
-
+        // Step 1: decrement neighbor counts to simulate removal.
         for (final PointNode neighbor : toDelete.neighbors) {
-            if (neighbor != toDelete) {
-                neighbor.neighborCount--;
-            }
+            neighbor.neighborCount--;
         }
 
         // Step 2: find ex-cores — nodes that have just lost core status.
-        // After decrement: neighborCount == minPts - 1 ⟺ was exactly at threshold.
+        // After decrement: neighborCount == minPts - 1  ⟺  was exactly at threshold.
+        // Special case: toDelete itself — was core if (decremented count + 1) >= minPts.
         final Set<PointNode> exCores = new HashSet<>();
         for (final PointNode neighbor : toDelete.neighbors) {
-            if (neighbor != toDelete && neighbor.neighborCount == minPts - 1) {
+            if (neighbor == toDelete) {
+                continue;
+            }
+            if (neighbor.neighborCount == minPts - 1) {
                 exCores.add(neighbor);
             }
         }
-        if (toDeleteWasCore) {
+        if (toDelete.neighborCount + 1 >= minPts) {
             // toDelete was a core point; add it to exCores for connectivity analysis.
             exCores.add(toDelete);
         }
 
         // Step 3: collect update seeds and non-core neighbors from ex-cores.
         final Set<PointNode> updateSeeds = new HashSet<>();
-        final Set<PointNode> directlyAffectedBorders = new HashSet<>();
+        final Set<PointNode> nonCoreNeighbors = new HashSet<>();
 
         for (final PointNode exCore : exCores) {
             for (final PointNode neighbor : exCore.neighbors) {
@@ -876,12 +529,12 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
                 if (neighbor.isCore()) {
                     updateSeeds.add(neighbor);
                 } else {
-                    directlyAffectedBorders.add(neighbor);
+                    nonCoreNeighbors.add(neighbor);
                 }
             }
         }
         updateSeeds.remove(toDelete);
-        directlyAffectedBorders.remove(toDelete);
+        nonCoreNeighbors.remove(toDelete);
 
         // Step 4: split detection — within each cluster group of update seeds,
         // check whether removing toDelete disconnects the core-point graph.
@@ -901,50 +554,18 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
             }
         }
 
-        // Step 5: re-evaluate ALL border points that might be affected.
-        // This includes:
-        //   (a) directly affected borders (neighbors of ex-cores)
-        //   (b) indirectly affected borders — border points whose core neighbor
-        //       had its cluster label changed by split detection
-        final Set<PointNode> allAffectedBorders = new HashSet<>(directlyAffectedBorders);
-
-        // Find border points whose label no longer matches any remaining core neighbor.
-        // These are border points that were in a cluster whose label was split away.
-        for (final PointNode node : nodes.values()) {
-            if (node == toDelete || node.isCore() || node.label < 0) {
-                continue;
-            }
-            // Check if this border point's label is still valid — does it have
-            // any core neighbor with the same label?
-            boolean labelStillValid = false;
-            for (final PointNode neighbor : node.neighbors) {
-                if (neighbor != toDelete && neighbor.isCore() &&
-                        neighbor.label == node.label) {
-                    labelStillValid = true;
-                    break;
-                }
-            }
-            if (!labelStillValid) {
-                allAffectedBorders.add(node);
-            }
-        }
-
-        // Reassign each affected border point based on its remaining core neighbors.
-        for (final PointNode border : allAffectedBorders) {
+        // Step 5: re-evaluate non-core (border) neighbors.
+        for (final PointNode border : nonCoreNeighbors) {
             if (border == toDelete) {
                 continue;
             }
-            int bestLabel = LABEL_NOISE;
+            int maxLabel = LABEL_NOISE;
             for (final PointNode neighbor : border.neighbors) {
-                if (neighbor != toDelete && neighbor.isCore() &&
-                        neighbor.label >= 0 && neighbor.label < bestLabel ||
-                        (bestLabel == LABEL_NOISE && neighbor.label >= 0)) {
-                    bestLabel = neighbor.label;
+                if (neighbor != toDelete && neighbor.isCore() && neighbor.label > maxLabel) {
+                    maxLabel = neighbor.label;
                 }
             }
-            removeFromLabelMap(border);
-            border.label = bestLabel;
-            addToLabelMap(border);
+            border.label = maxLabel;
         }
     }
 
@@ -1105,55 +726,22 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
     }
 
     // =========================================================================
-    // Label helpers (using bidirectional mapping)
+    // Label helpers
     // =========================================================================
 
-    /**
-     * Adds a node to the {@link #labelToNodes} bidirectional mapping.
-     * Called whenever a node's label is set or changed.
-     */
-    private void addToLabelMap(final PointNode node) {
-        labelToNodes.computeIfAbsent(node.label, k -> new LinkedHashSet<>()).add(node);
-    }
-
-    /**
-     * Removes a node from the {@link #labelToNodes} bidirectional mapping.
-     * Called before a node's label is changed.
-     */
-    private void removeFromLabelMap(final PointNode node) {
-        final Set<PointNode> set = labelToNodes.get(node.label);
-        if (set != null) {
-            set.remove(node);
-            if (set.isEmpty()) {
-                labelToNodes.remove(node.label);
-            }
-        }
-    }
-
-    /** Sets {@code label} on every node in {@code nodeSet}, updating the label map. */
+    /** Sets {@code label} on every node in {@code nodeSet}. */
     private void setLabels(final Set<PointNode> nodeSet, final int label) {
         for (final PointNode node : nodeSet) {
-            removeFromLabelMap(node);
             node.label = label;
-            addToLabelMap(node);
         }
     }
 
-    /**
-     * Renames all occurrences of {@code oldLabel} to {@code newLabel} globally.
-     * Uses the {@link #labelToNodes} bidirectional mapping for O(k) performance,
-     * where k is the number of nodes with {@code oldLabel}.
-     */
+    /** Renames all occurrences of {@code oldLabel} to {@code newLabel} globally. */
     private void changeLabels(final int oldLabel, final int newLabel) {
-        final Set<PointNode> oldSet = labelToNodes.remove(oldLabel);
-        if (oldSet == null) {
-            return;
-        }
-        final Set<PointNode> newSet = labelToNodes.computeIfAbsent(newLabel,
-                k -> new LinkedHashSet<>());
-        for (final PointNode node : oldSet) {
-            node.label = newLabel;
-            newSet.add(node);
+        for (final PointNode node : nodes.values()) {
+            if (node.label == oldLabel) {
+                node.label = newLabel;
+            }
         }
     }
 
@@ -1167,9 +755,7 @@ public class IncrementalDBSCANClusterer<T extends Clusterable> extends Clusterer
             final int label = core.label;
             for (final PointNode neighbor : core.neighbors) {
                 if (neighbor.label < 0) {
-                    removeFromLabelMap(neighbor);
                     neighbor.label = label;
-                    addToLabelMap(neighbor);
                 }
             }
         }
