@@ -280,6 +280,13 @@ public class IncrementalDBSCANClustererV1<T extends Clusterable> extends Cluster
         processInsertion(newNode);
     }
 
+    public void addPoints(final Collection<T> points) {
+        NullArgumentException.check(points);
+        for (T point : points) {
+            addPoint(point);
+        }
+    }
+
     /**
      * Incrementally removes a point and updates the clustering.
      *

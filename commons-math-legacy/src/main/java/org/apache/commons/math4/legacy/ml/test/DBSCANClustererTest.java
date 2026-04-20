@@ -1,9 +1,11 @@
 package org.apache.commons.math4.legacy.ml.test;
 
 import org.apache.commons.math4.legacy.ml.clustering.Cluster;
+import org.apache.commons.math4.legacy.ml.clustering.Clusterable;
 import org.apache.commons.math4.legacy.ml.clustering.DBSCANClusterer;
 import org.apache.commons.math4.legacy.ml.clustering.DoublePoint;
 import org.apache.commons.math4.legacy.ml.clustering.IncrementalDBSCANClusterer;
+import org.apache.commons.math4.legacy.ml.clustering.IncrementalDBSCANClustererV1;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +57,11 @@ public class DBSCANClustererTest {
     private static void incrementalDBSCANTest() {
         System.out.println("=== 测试增量 DBSCAN 聚类算法 ===");
         List<DoublePoint> points = generateDataPoints(1000);
+
+
         IncrementalDBSCANClusterer<DoublePoint> clusterer = new IncrementalDBSCANClusterer<>(0.5, 5);
+        // IncrementalDBSCANClustererV1<DoublePoint> clusterer = createDBSCANClusterer(IncrementalDBSCANClustererV1.class, 0.5, 5);
+
         long start = System.currentTimeMillis();
         List<Cluster<DoublePoint>> clusters = clusterer.cluster(points);
         long end = System.currentTimeMillis();
@@ -63,7 +69,7 @@ public class DBSCANClustererTest {
         printClusterResult(clusters);
 
         for (int i = 0; i < 20; i++) {
-            System.out.printf("------ 第 %d 次 ------%n", i+1);
+            System.out.printf("------ 第 %d 次 ------%n", i + 1);
             clusterer.addPoints(generateDataPoints(500));
             long incStart = System.currentTimeMillis();
             clusters = clusterer.getClusters();
@@ -76,9 +82,61 @@ public class DBSCANClustererTest {
         }
     }
 
+    private static void incrementalDBSCANClusterV1Test() {
+        int radius = 30;
+        long runTime = 0;
+        System.out.println("=== 测试增量 DBSCAN 聚类算法 ===");
+        List<DoublePoint> points = generateClusterPoints(radius, 1000);
+
+
+        IncrementalDBSCANClustererV1<DoublePoint> clusterer = new IncrementalDBSCANClustererV1<>(0.5, 5);
+
+        long start = System.currentTimeMillis();
+        List<Cluster<DoublePoint>> clusters = clusterer.cluster(points);
+        long end = System.currentTimeMillis();
+        runTime += (end - start);
+        System.out.println("初始化运行时间: " + (end - start) + " ms");
+        printClusterResult(clusters);
+
+        for (int i = 0; i < 20; i++) {
+            System.out.printf("------ 第 %d 次 ------%n", i + 1);
+
+            long addStart = System.currentTimeMillis();
+            clusterer.addPoints(generateClusterPoints(radius, 500));
+            long addEnd = System.currentTimeMillis();
+            runTime += (addEnd - addStart);
+            System.out.println("addPoints运行时间: " + (addEnd - addStart) + " ms");
+
+            // long incStart = System.currentTimeMillis();
+            clusters = clusterer.getClusters();
+            // long incEnd = System.currentTimeMillis();
+            // System.out.println("getClusters运行时间: " + (incEnd - incStart) + " ms");
+            // printClusterResult(clusters);
+
+            int clusteredPoints = clusters.stream()
+                    .mapToInt(c -> c.getPoints().size())
+                    .sum();
+            System.out.println("发现的簇数量: " + clusters.size() + "，已聚类点数量: " + clusteredPoints);
+
+        }
+        System.out.println("总运行时间: " + runTime + " ms");
+    }
+
     public static void main(String[] args) {
         // executionTimeTest();
-        incrementalDBSCANTest();
+        // incrementalDBSCANTest();
+        incrementalDBSCANClusterV1Test();
+    }
+
+    private static <T extends Clusterable> Object createDBSCANClusterer(Class<?> clazz, double eps, int minPts) {
+        System.out.println("使用" + clazz.getName());
+        if (IncrementalDBSCANClusterer.class.isAssignableFrom(clazz)) {
+            return new IncrementalDBSCANClusterer<>(eps, minPts);
+        } else if (IncrementalDBSCANClustererV1.class.isAssignableFrom(clazz)) {
+            return new IncrementalDBSCANClustererV1<>(eps, minPts);
+        } else {
+            throw new IllegalArgumentException("不支持的聚类器类型: " + clazz.getName());
+        }
     }
 
     private static List<DoublePoint> generateSmallDataPoints() {
@@ -109,6 +167,17 @@ public class DBSCANClustererTest {
         System.out.println("测试数据点总数: " + points.size());
         printPoints(points);
         System.out.println();
+        return points;
+    }
+
+    private static List<DoublePoint> generateClusterPoints(double radius, int count) {
+        Random random = new Random();
+        List<DoublePoint> points = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            double x = random.nextDouble() * radius;
+            double y = random.nextDouble() * radius;
+            points.add(new DoublePoint(new double[]{x, y}));
+        }
         return points;
     }
 
@@ -174,7 +243,6 @@ public class DBSCANClustererTest {
             // System.out.println();
         }
 
-        // 5. 计算未被聚类的噪声点
         printStatistics(clusters);
     }
 
