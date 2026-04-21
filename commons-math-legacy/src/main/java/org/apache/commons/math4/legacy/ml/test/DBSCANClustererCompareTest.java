@@ -12,8 +12,11 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * DBSCAN 聚类算法测试示例
@@ -22,18 +25,18 @@ public class DBSCANClustererCompareTest {
 
     private static final String FILE_PATH = "E:\\work\\OpenNMS\\apache\\commons-math\\commons-math-legacy\\src\\main\\java\\org\\apache\\commons\\math4\\legacy\\ml\\test";
 
-    private static final int COMPARE_COUNT = 20;
-    private static final int COMPARE_RADIUS = 5;
+    private static final int COMPARE_COUNT = 50;
+    private static final int COMPARE_RADIUS = 50;
     private static final int COMPARE_SEED = 100;
 
     private static final double COMPARE_EPS = 1;
     private static final int COMPARE_MIN_PTS = 1;
 
-    private static void simpleIncrementalDBSCANClusterV1Test() throws IOException {
+    private static List<Cluster<DoublePoint>> simpleIncrementalDBSCANClusterV1Test() throws IOException {
         long runTime = 0;
         System.out.printf("%n=== 测试增量 DBSCAN 聚类算法 ===%n");
 
-        IncrementalDBSCANClustererV1<DoublePoint> clusterer = new IncrementalDBSCANClustererV1<>(COMPARE_EPS, COMPARE_MIN_PTS+1);
+        IncrementalDBSCANClustererV1<DoublePoint> clusterer = new IncrementalDBSCANClustererV1<>(COMPARE_EPS, COMPARE_MIN_PTS + 1);
 
         int seed = COMPARE_SEED;
         int radius = COMPARE_RADIUS;
@@ -81,10 +84,11 @@ public class DBSCANClustererCompareTest {
         System.out.println("已聚类簇总数: " + allClusters.size() + "，已聚类点数量: " + allPoints);
         System.out.println("总运行时间: " + runTime + " ms");
 
-        printClusterResult(allClusters);
+        // printClusterResult(allClusters);
+        return allClusters;
     }
 
-    private static void originalDBSCANTest() throws IOException {
+    private static List<Cluster<DoublePoint>> originalDBSCANTest() throws IOException {
         System.out.printf("%n=== 测试原始 DBSCAN 聚类算法 ===%n");
 
         long runTime = 0;
@@ -110,12 +114,151 @@ public class DBSCANClustererCompareTest {
         System.out.println("已聚类簇总数: " + clusters.size() + "，已聚类点数量: " + clusteredPoints);
         System.out.println("总运行时间: " + runTime + " ms, cluster 时间: " + (end - start) + " ms");
 
-        printClusterResult(clusters);
+        // printClusterResult(clusters);
+        return clusters;
+    }
+
+    private static List<Cluster<DoublePoint>> incrementalDBSCANClusterV1Test() throws IOException {
+        long runTime = 0;
+        System.out.printf("%n=== 测试增量 DBSCAN 聚类算法 ===%n");
+
+        IncrementalDBSCANClustererV1<DoublePoint> clusterer = new IncrementalDBSCANClustererV1<>(COMPARE_EPS, COMPARE_MIN_PTS + 1);
+
+        int seed = COMPARE_SEED;
+        int radius = COMPARE_RADIUS;
+        int count = COMPARE_COUNT;
+        int round = 2;
+        int single = count / round;
+
+        List<DoublePoint> doublePointList = generateClusterPoints(radius, count, seed);
+
+        exportPointsToFile(doublePointList, FILE_PATH + "/points.txt");
+
+        // for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < round; i++) {
+            List<DoublePoint> curDoublePointList = doublePointList.subList(i * single, (i + 1) * single);
+
+            System.out.printf("------ 第 %d 次 ------%n", i + 1);
+
+            // System.out.println("当前数据点: ");
+            // System.out.println(curDoublePointList);
+
+            long addStart = System.currentTimeMillis();
+            clusterer.addPoints(curDoublePointList);
+            long addEnd = System.currentTimeMillis();
+            runTime += (addEnd - addStart);
+            System.out.println("addPoints运行时间: " + (addEnd - addStart) + " ms");
+
+            // long incStart = System.currentTimeMillis();
+            List<Cluster<DoublePoint>> clusters = clusterer.getClusters();
+            // long incEnd = System.currentTimeMillis();
+            // System.out.println("getClusters运行时间: " + (incEnd - incStart) + " ms");
+            // printClusterResult(clusters);
+
+            int clusteredPoints = clusters.stream()
+                    .mapToInt(c -> c.getPoints().size())
+                    .sum();
+            System.out.println("发现的簇数量: " + clusters.size() + "，已聚类点数量: " + clusteredPoints);
+        }
+        List<Cluster<DoublePoint>> allClusters = clusterer.getClusters();
+        int allPoints = allClusters.stream()
+                .mapToInt(c -> c.getPoints().size())
+                .sum();
+        System.out.println("已聚类簇总数: " + allClusters.size() + "，已聚类点数量: " + allPoints);
+        System.out.println("总运行时间: " + runTime + " ms");
+
+        return allClusters;
     }
 
     public static void main(String[] args) throws IOException {
-        originalDBSCANTest();
-        simpleIncrementalDBSCANClusterV1Test();
+        List<Cluster<DoublePoint>> originClusters = originalDBSCANTest();
+        // List<Cluster<DoublePoint>> incClusters = simpleIncrementalDBSCANClusterV1Test();
+        List<Cluster<DoublePoint>> incClusters = incrementalDBSCANClusterV1Test();
+        boolean result = compareClusters(originClusters, incClusters);
+        // System.out.println("结果是否一致: " + result);
+    }
+
+    /**
+     * 验证两个聚类结果是否一致
+     *
+     * @param clusters1 第一个聚类结果
+     * @param clusters2 第二个聚类结果
+     * @return 如果两个聚类结果一致则返回true，否则返回false
+     */
+    private static boolean compareClusters(List<Cluster<DoublePoint>> clusters1, List<Cluster<DoublePoint>> clusters2) {
+        System.out.println("\n=== 聚类结果对比 ===");
+
+        // 比较簇数量
+        if (clusters1.size() != clusters2.size()) {
+            System.out.println("❌ 簇数量不一致: " + clusters1.size() + " vs " + clusters2.size());
+            return false;
+        }
+        System.out.println("✓ 簇数量一致: " + clusters1.size());
+
+        // 计算每个结果的总点数
+        int totalPoints1 = clusters1.stream().mapToInt(c -> c.getPoints().size()).sum();
+        int totalPoints2 = clusters2.stream().mapToInt(c -> c.getPoints().size()).sum();
+
+        if (totalPoints1 != totalPoints2) {
+            System.out.println("❌ 已聚类点数不一致: " + totalPoints1 + " vs " + totalPoints2);
+            return false;
+        }
+        System.out.println("✓ 已聚类点数一致: " + totalPoints1);
+
+        // 将簇转换为点的集合列表以便比较（忽略簇的顺序）
+        List<Set<DoublePoint>> clusterSets1 = clusters1.stream()
+                .map(c -> new HashSet<>(c.getPoints()))
+                .collect(Collectors.toList());
+
+        List<Set<DoublePoint>> clusterSets2 = clusters2.stream()
+                .map(c -> new HashSet<>(c.getPoints()))
+                .collect(Collectors.toList());
+
+        // 检查每个簇是否在另一个结果中有匹配
+        boolean[] matched2 = new boolean[clusterSets2.size()];
+        int matchCount = 0;
+
+        for (int i = 0; i < clusterSets1.size(); i++) {
+            Set<DoublePoint> set1 = clusterSets1.get(i);
+            boolean found = false;
+
+            for (int j = 0; j < clusterSets2.size(); j++) {
+                if (!matched2[j] && setsEqual(set1, clusterSets2.get(j))) {
+                    matched2[j] = true;
+                    found = true;
+                    matchCount++;
+                    break;
+                }
+            }
+
+            if (!found) {
+                System.out.println("❌ 簇 #" + (i + 1) + " 在第二个结果中未找到匹配");
+                System.out.println("   包含点数: " + set1.size());
+            }
+        }
+
+        if (matchCount == clusters1.size()) {
+            System.out.println("✓ 所有簇都找到匹配");
+            System.out.println("✅ 两个聚类结果完全一致！");
+            return true;
+        } else {
+            System.out.println("❌ 只有 " + matchCount + "/" + clusters1.size() + " 个簇匹配");
+            return false;
+        }
+    }
+
+    /**
+     * 比较两个点集是否相等
+     *
+     * @param set1 第一个点集
+     * @param set2 第二个点集
+     * @return 如果两个点集包含相同的点则返回true
+     */
+    private static boolean setsEqual(Set<DoublePoint> set1, Set<DoublePoint> set2) {
+        if (set1.size() != set2.size()) {
+            return false;
+        }
+        return set1.containsAll(set2);
     }
 
     /**
@@ -170,8 +313,8 @@ public class DBSCANClustererCompareTest {
         Random random = new Random(seed);
         List<DoublePoint> points = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            double x = random.nextDouble() * radius;
-            double y = random.nextDouble() * radius;
+            double x = Math.round(random.nextDouble() * radius * 100.0) / 100.0;
+            double y = Math.round(random.nextDouble() * radius * 100.0) / 100.0;
             points.add(new DoublePoint(new double[]{x, y}));
         }
         return points;

@@ -35,12 +35,16 @@ import org.apache.commons.math4.legacy.exception.util.LocalizedFormats;
  * @since 2.2
  */
 public class NullArgumentException extends NullPointerException
-    implements ExceptionContextProvider {
+        implements ExceptionContextProvider {
 
-    /** Serializable version Id. */
+    /**
+     * Serializable version Id.
+     */
     private static final long serialVersionUID = 20150225L;
 
-    /** Context. */
+    /**
+     * Context.
+     */
     private final ExceptionContext context;
 
     /**
@@ -49,9 +53,10 @@ public class NullArgumentException extends NullPointerException
     public NullArgumentException() {
         this(LocalizedFormats.NULL_NOT_ALLOWED);
     }
+
     /**
-     * @param pattern Message pattern providing the specific context of
-     * the error.
+     * @param pattern   Message pattern providing the specific context of
+     *                  the error.
      * @param arguments Values for replacing the placeholders in {@code pattern}.
      */
     public NullArgumentException(Localizable pattern,
@@ -62,6 +67,7 @@ public class NullArgumentException extends NullPointerException
 
     /**
      * {@inheritDoc}
+     *
      * @since 4.0
      */
     @Override
@@ -69,13 +75,17 @@ public class NullArgumentException extends NullPointerException
         return context;
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getMessage() {
         return context.getMessage();
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getLocalizedMessage() {
         return context.getLocalizedMessage();
@@ -84,9 +94,9 @@ public class NullArgumentException extends NullPointerException
     /**
      * Checks that an object is not null.
      *
-     * @param o Object to be checked.
+     * @param o       Object to be checked.
      * @param pattern Message pattern.
-     * @param args Arguments to replace the placeholders in {@code pattern}.
+     * @param args    Arguments to replace the placeholders in {@code pattern}.
      * @throws NullArgumentException if {@code o} is {@code null}.
      */
     public static void check(Object o,
