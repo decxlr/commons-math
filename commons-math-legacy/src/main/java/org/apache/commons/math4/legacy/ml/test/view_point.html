@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DBSCAN 点分布可视化</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 2px solid #e9ecef;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .control-group label {
+            font-weight: bold;
+            color: #495057;
+            font-size: 14px;
+        }
+
+        .control-group input[type="number"] {
+            padding: 8px 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 6px;
+            font-size: 14px;
+            width: 100px;
+            transition: border-color 0.3s;
+        }
+
+        .control-group input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .control-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .main-content {
+            display: flex;
+            padding: 30px;
+            gap: 30px;
+        }
+
+        .canvas-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #canvas {
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            background: #fafafa;
+            cursor: crosshair;
+            display: block;
+            width: 100%;
+        }
+
+        .info-panel {
+            width: 350px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .info-panel h3 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .point-info {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .point-info .point-id {
+            font-weight: bold;
+            color: #667eea;
+            font-size: 16px;
+            margin-bottom: 5px;
+        }
+
+        .point-info .point-coords {
+            color: #6c757d;
+            font-size: 13px;
+            margin-bottom: 5px;
+        }
+
+        .point-info .point-distance {
+            color: #28a745;
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .stats {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .stats-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .stats-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .stats-label {
+            color: #6c757d;
+        }
+
+        .stats-value {
+            font-weight: bold;
+            color: #495057;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-size: 13px;
+            pointer-events: none;
+            display: none;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .legend {
+            margin-top: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 10px;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .file-input-container {
+            margin-bottom: 15px;
+        }
+
+        .file-input-container input[type="file"] {
+            display: none;
+        }
+
+        .file-input-container label {
+            display: inline-block;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+
+        .file-input-container label:hover {
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 DBSCAN 点分布可视化</h1>
+            <p>交互式展示数据点位置、距离关系和邻域分析</p>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="epsInput">ε (邻域半径):</label>
+                <input type="number" id="epsInput" value="1.0" step="0.1" min="0">
+            </div>
+            <div class="control-group">
+                <label for="minPtsInput">MinPts:</label>
+                <input type="number" id="minPtsInput" value="2" min="1">
+            </div>
+            <div class="control-group">
+                <input type="checkbox" id="showDistances" checked>
+                <label for="showDistances">显示距离线</label>
+            </div>
+            <div class="control-group">
+                <input type="checkbox" id="showLabels" checked>
+                <label for="showLabels">显示标签</label>
+            </div>
+            <button onclick="loadFile()">📁 加载文件</button>
+            <button onclick="updateVisualization()">🔄 刷新视图</button>
+        </div>
+
+        <div class="main-content">
+            <div class="canvas-container">
+                <canvas id="canvas" width="900" height="600"></canvas>
+                <div class="tooltip" id="tooltip"></div>
+            </div>
+
+            <div class="info-panel">
+                <div class="file-input-container">
+                    <input type="file" id="fileInput" accept=".txt,.csv" onchange="handleFileSelect(event)">
+                    <label for="fileInput">选择 points.txt 文件</label>
+                </div>
+
+                <div class="stats" id="stats">
+                    <h3 style="margin-bottom: 15px;">📊 统计信息</h3>
+                    <div class="stats-item">
+                        <span class="stats-label">总点数:</span>
+                        <span class="stats-value" id="totalPoints">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">X 范围:</span>
+                        <span class="stats-value" id="xRange">-</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Y 范围:</span>
+                        <span class="stats-value" id="yRange">-</span>
+                    </div>
+                </div>
+
+                <h3>📍 鼠标悬停的点</h3>
+                <div id="hoverInfo">
+                    <p style="color: #6c757d; font-style: italic;">将鼠标移到点上查看详细信息</p>
+                </div>
+
+                <div class="legend">
+                    <h3 style="margin-bottom: 10px;">🎨 图例</h3>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #667eea;"></div>
+                        <span>普通点</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff6b6b;"></div>
+                        <span>核心点 (≥ MinPts)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffd93d;"></div>
+                        <span>边界点</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #6bcf7f;"></div>
+                        <span>当前选中点</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let points = [];
+        let canvas, ctx;
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let hoveredPoint = null;
+        let selectedPoint = null;
+
+        // 初始化
+        window.onload = function() {
+            canvas = document.getElementById('canvas');
+            ctx = canvas.getContext('2d');
+
+            // 绑定事件
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('click', handleClick);
+            canvas.addEventListener('mouseleave', () => {
+                hoveredPoint = null;
+                updateVisualization();
+            });
+
+            // 绑定控件变化事件
+            document.getElementById('epsInput').addEventListener('change', updateVisualization);
+            document.getElementById('minPtsInput').addEventListener('change', updateVisualization);
+            document.getElementById('showDistances').addEventListener('change', updateVisualization);
+            document.getElementById('showLabels').addEventListener('change', updateVisualization);
+
+            // 尝试加载默认文件
+            loadDefaultPoints();
+        };
+
+        function loadFile() {
+            document.getElementById('fileInput').click();
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                parsePoints(e.target.result);
+            };
+            reader.readAsText(file);
+        }
+
+        function loadDefaultPoints() {
+            // 这里可以嵌入默认的points.txt内容
+            const defaultContent = `index,x,y
+0,3.610048,0.974880
+1,3.335798,3.892204
+2,3.093038,3.115485
+3,1.183758,2.436136
+4,3.402111,2.622727
+5,2.484952,4.954931
+6,4.460699,1.738937
+7,2.347366,2.846948
+8,3.223465,3.925989
+9,0.756899,0.606760
+10,2.066214,1.433632
+11,3.123095,3.657311
+12,2.430185,0.760630
+13,0.147938,2.106577
+14,2.249908,1.340889
+15,2.287611,4.786777
+16,1.401854,4.627568
+17,4.863299,2.978164
+18,1.525341,0.245270
+19,4.569472,3.419570`;
+            parsePoints(defaultContent);
+        }
+
+        function parsePoints(content) {
+            const lines = content.trim().split('\n');
+            points = [];
+
+            // 跳过标题行
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                const parts = line.split(',');
+                if (parts.length >= 3) {
+                    points.push({
+                        index: parseInt(parts[0]),
+                        x: parseFloat(parts[1]),
+                        y: parseFloat(parts[2])
+                    });
+                }
+            }
+
+            console.log(`加载了 ${points.length} 个点`);
+            calculateScale();
+            updateVisualization();
+        }
+
+        function calculateScale() {
+            if (points.length === 0) return;
+
+            const minX = Math.min(...points.map(p => p.x));
+            const maxX = Math.max(...points.map(p => p.x));
+            const minY = Math.min(...points.map(p => p.y));
+            const maxY = Math.max(...points.map(p => p.y));
+
+            const padding = 50;
+            const availableWidth = canvas.width - 2 * padding;
+            const availableHeight = canvas.height - 2 * padding;
+
+            const rangeX = maxX - minX || 1;
+            const rangeY = maxY - minY || 1;
+
+            scale = Math.min(availableWidth / rangeX, availableHeight / rangeY);
+            offsetX = padding - minX * scale;
+            offsetY = padding - minY * scale;
+
+            // 更新统计信息
+            document.getElementById('totalPoints').textContent = points.length;
+            document.getElementById('xRange').textContent = `${minX.toFixed(2)} ~ ${maxX.toFixed(2)}`;
+            document.getElementById('yRange').textContent = `${minY.toFixed(2)} ~ ${maxY.toFixed(2)}`;
+        }
+
+        function worldToCanvas(x, y) {
+            return {
+                x: x * scale + offsetX,
+                y: canvas.height - (y * scale + offsetY) // Y轴翻转
+            };
+        }
+
+        function canvasToWorld(canvasX, canvasY) {
+            return {
+                x: (canvasX - offsetX) / scale,
+                y: (canvas.height - canvasY - offsetY) / scale
+            };
+        }
+
+        function calculateDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function getNeighbors(point, eps) {
+            return points.filter(p => p !== point && calculateDistance(point, p) <= eps);
+        }
+
+        function isCorePoint(point, eps, minPts) {
+            return getNeighbors(point, eps).length >= minPts;
+        }
+
+        function updateVisualization() {
+            if (points.length === 0) return;
+
+            const eps = parseFloat(document.getElementById('epsInput').value);
+            const minPts = parseInt(document.getElementById('minPtsInput').value);
+            const showDistances = document.getElementById('showDistances').checked;
+            const showLabels = document.getElementById('showLabels').checked;
+
+            // 清空画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 绘制网格
+            drawGrid();
+
+            // 绘制距离线
+            if (showDistances && (hoveredPoint || selectedPoint)) {
+                const referencePoint = selectedPoint || hoveredPoint;
+                drawDistanceLines(referencePoint, eps);
+            }
+
+            // 绘制所有点
+            points.forEach(point => {
+                const pos = worldToCanvas(point.x, point.y);
+                const neighbors = getNeighbors(point, eps);
+                const isCore = neighbors.length >= minPts;
+                const isHovered = hoveredPoint === point;
+                const isSelected = selectedPoint === point;
+
+                // 确定颜色
+                let color = '#667eea'; // 普通点
+                if (isCore) {
+                    color = '#ff6b6b'; // 核心点
+                } else if (neighbors.length > 0) {
+                    color = '#ffd93d'; // 边界点
+                }
+                if (isSelected) {
+                    color = '#6bcf7f'; // 选中点
+                }
+
+                // 绘制点
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, isHovered || isSelected ? 8 : 5, 0, Math.PI * 2);
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 绘制标签
+                if (showLabels) {
+                    ctx.fillStyle = '#333';
+                    ctx.font = '11px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(point.index.toString(), pos.x, pos.y - 12);
+                }
+            });
+
+            // 更新悬停信息
+            if (hoveredPoint) {
+                updateHoverInfo(hoveredPoint, eps, minPts);
+            }
+        }
+
+        function drawGrid() {
+            ctx.strokeStyle = '#e9ecef';
+            ctx.lineWidth = 1;
+
+            // 垂直线
+            for (let x = 0; x <= canvas.width; x += 50) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+
+            // 水平线
+            for (let y = 0; y <= canvas.height; y += 50) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+
+        function drawDistanceLines(referencePoint, eps) {
+            const refPos = worldToCanvas(referencePoint.x, referencePoint.y);
+
+            points.forEach(point => {
+                if (point === referencePoint) return;
+
+                const distance = calculateDistance(referencePoint, point);
+                const pos = worldToCanvas(point.x, point.y);
+
+                // 如果在ε范围内，绘制绿色线，否则绘制灰色线
+                if (distance <= eps) {
+                    ctx.beginPath();
+                    ctx.moveTo(refPos.x, refPos.y);
+                    ctx.lineTo(pos.x, pos.y);
+                    ctx.strokeStyle = 'rgba(107, 207, 127, 0.6)';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 5]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // 在连线中点显示距离
+                    const midX = (refPos.x + pos.x) / 2;
+                    const midY = (refPos.y + pos.y) / 2;
+                    ctx.fillStyle = '#28a745';
+                    ctx.font = 'bold 10px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(distance.toFixed(2), midX, midY - 5);
+                }
+            });
+
+            // 绘制ε范围的圆
+            ctx.beginPath();
+            ctx.arc(refPos.x, refPos.y, eps * scale, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(255, 107, 107, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 标注ε
+            ctx.fillStyle = '#ff6b6b';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`ε=${eps}`, refPos.x + eps * scale + 5, refPos.y);
+        }
+
+        function handleMouseMove(event) {
+            const rect = canvas.getBoundingClientRect();
+            // 计算缩放比例，考虑CSS显示尺寸与Canvas实际尺寸的差异
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            const mouseX = (event.clientX - rect.left) * scaleX;
+            const mouseY = (event.clientY - rect.top) * scaleY;
+
+            // 查找最近的点
+            let closestPoint = null;
+            let minDistance = Infinity;
+
+            points.forEach(point => {
+                const pos = worldToCanvas(point.x, point.y);
+                const distance = Math.sqrt(Math.pow(mouseX - pos.x, 2) + Math.pow(mouseY - pos.y, 2));
+
+                if (distance < 15 && distance < minDistance) {
+                    minDistance = distance;
+                    closestPoint = point;
+                }
+            });
+
+            if (closestPoint !== hoveredPoint) {
+                hoveredPoint = closestPoint;
+                updateVisualization();
+            }
+        }
+
+        function handleClick(event) {
+            if (hoveredPoint) {
+                selectedPoint = hoveredPoint;
+                updateVisualization();
+            }
+        }
+
+        function updateHoverInfo(point, eps, minPts) {
+            const neighbors = getNeighbors(point, eps);
+            const isCore = neighbors.length >= minPts;
+            const infoDiv = document.getElementById('hoverInfo');
+
+            let html = `
+                <div class="point-info">
+                    <div class="point-id">点 #${point.index}</div>
+                    <div class="point-coords">坐标: (${point.x.toFixed(4)}, ${point.y.toFixed(4)})</div>
+                    <div class="point-coords">类型: ${isCore ? '🔴 核心点' : (neighbors.length > 0 ? '🟡 边界点' : '⚪ 噪声点')}</div>
+                    <div class="point-distance">ε邻域内点数: ${neighbors.length} (需要 ${minPts})</div>
+                </div>
+            `;
+
+            if (neighbors.length > 0) {
+                html += '<div style="margin-top: 15px;"><strong>邻域内的点:</strong></div>';
+                neighbors.forEach(neighbor => {
+                    const distance = calculateDistance(point, neighbor);
+                    html += `
+                        <div class="point-info" style="margin-top: 8px; border-left-color: #28a745;">
+                            <div class="point-coords">点 #${neighbor.index}: (${neighbor.x.toFixed(2)}, ${neighbor.y.toFixed(2)})</div>
+                            <div class="point-distance">距离: ${distance.toFixed(4)}</div>
+                        </div>
+                    `;
+                });
+            }
+
+            infoDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
